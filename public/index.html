@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Fashion Brain</title>
+    <style>
+        body { font-family: 'PingFang SC', sans-serif; background-color: #f4f6f8; display: flex; flex-direction: column; align-items: center; padding-top: 60px; margin: 0; color: #333; }
+        
+        .search-container { width: 100%; max-width: 600px; position: relative; padding: 20px; }
+        
+        /* 季节徽章 */
+        .season-badge {
+            display: inline-flex; align-items: center; gap: 6px;
+            background: #e3f2fd; color: #1565c0; padding: 6px 12px;
+            border-radius: 20px; font-size: 12px; margin-bottom: 15px;
+            float: right; font-weight: 600;
+        }
+
+        /* 输入框组合 */
+        .input-group {
+            position: relative; display: flex; align-items: center;
+            background: white; border-radius: 16px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.08); z-index: 1001;
+            padding-right: 10px;
+        }
+
+        input[type="text"] { 
+            flex: 1; padding: 20px; padding-right: 90px;
+            font-size: 18px; border: none; background: transparent; outline: none; 
+        }
+
+        /* 按钮群 */
+        .action-btns { position: absolute; right: 10px; display: flex; align-items: center; gap: 8px; }
+        
+        .icon-btn { cursor: pointer; padding: 8px; border-radius: 50%; color: #999; transition: .2s; font-size: 18px; }
+        .icon-btn:hover { background: #f5f5f5; color: #333; }
+
+        .confirm-btn {
+            background: #202124; color: white; border: none;
+            padding: 8px 16px; border-radius: 10px; font-size: 14px;
+            cursor: pointer; font-weight: 600;
+        }
+        .confirm-btn:hover { background: #333; }
+        .confirm-btn:disabled { background: #ccc; cursor: not-allowed; }
+
+        /* 列表 */
+        .suggestions-list { 
+            position: absolute; top: 100%; left: 20px; right: 20px; 
+            background: white; border-radius: 0 0 16px 16px; 
+            max-height: 400px; overflow-y: auto; z-index: 1000; 
+            display: none; box-shadow: 0 15px 50px rgba(0,0,0,0.1); 
+            padding: 10px 0; margin-top: -10px; 
+        }
+        
+        .suggestions-list li { 
+            padding: 12px 20px; cursor: pointer; border-bottom: 1px solid #f9f9f9; 
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .suggestions-list li:hover { background-color: #f8f9fa; }
+
+        .term-main { font-weight: 600; font-size: 16px; }
+        .term-sub { font-size: 11px; color: #999; margin-top: 2px; }
+        
+        .hot-score {
+            font-size: 12px; color: #ff5722; background: #fff3e0;
+            padding: 2px 8px; border-radius: 10px; font-weight: bold;
+        }
+
+        .toast {
+            position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+            background: rgba(0,0,0,0.8); color: white; padding: 10px 20px;
+            border-radius: 30px; font-size: 14px; opacity: 0; transition: opacity 0.3s;
+            pointer-events: none; z-index: 2000;
+        }
+    </style>
+</head>
+<body>
+
+<div class="search-container">
+    <div class="season-badge" id="seasonDisplay">🚀 初始化周期...</div>
+
+    <div class="input-group">
+        <input type="text" id="searchInput" placeholder="输入或粘贴行业词汇...">
+        <div class="action-btns">
+            <div class="icon-btn" id="pasteBtn" title="粘贴">📋</div>
+            <button class="confirm-btn" id="confirmBtn">入库</button>
+        </div>
+    </div>
+    <ul class="suggestions-list" id="suggestions"></ul>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+    const searchInput = document.getElementById('searchInput');
+    const suggestionsPanel = document.getElementById('suggestions');
+    const confirmBtn = document.getElementById('confirmBtn');
+    const toast = document.getElementById('toast');
+    const seasonDisplay = document.getElementById('seasonDisplay');
+
+    // 1. 自动计算研发季节 (N+1)
+    function getDesignSeason() {
+        const month = new Date().getMonth() + 1; 
+        let targetMonth = month + 3;
+        if (targetMonth > 12) targetMonth -= 12;
+        
+        if (targetMonth >= 3 && targetMonth <= 5) return { code: 'spring', label: '春季研发' };
+        if (targetMonth >= 6 && targetMonth <= 8) return { code: 'summer', label: '夏季研发' };
+        if (targetMonth >= 9 && targetMonth <= 11) return { code: 'autumn', label: '秋季研发' };
+        return { code: 'winter', label: '冬季研发' };
+    }
+    const currentSeason = getDesignSeason();
+    seasonDisplay.innerText = `📅 ${currentSeason.label}`;
+
+    // 2. SSE 连接
+    const clientId = 'client-' + Math.random().toString(36).substr(2, 9);
+    // 注意：这里使用相对路径 /api/events，适配 Render 域名
+    const evtSource = new EventSource(`/api/events?clientId=${clientId}`);
+    
+    evtSource.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        if (payload.type === 'result') {
+            const val = searchInput.value.trim().toLowerCase();
+            // 简单防抖：确保返回的结果匹配当前输入
+            if (val && val.includes(payload.triggerWord.toLowerCase())) {
+                renderList(payload.data);
+            }
+        }
+    };
+
+    // 3. 搜索逻辑
+    let debounceTimer;
+    searchInput.addEventListener('input', () => {
+        const val = searchInput.value.trim();
+        if (!val) { suggestionsPanel.style.display = 'none'; return; }
+        
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(async () => {
+            await fetch('/api/suggest', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    clientId, 
+                    fullText: val, 
+                    triggerWord: val, // 简化版直接用全文做触发
+                    userContext: { season: currentSeason.code }
+                })
+            });
+        }, 300);
+    });
+
+    // 4. 渲染列表
+    function renderList(list) {
+        suggestionsPanel.innerHTML = '';
+        if (!list || list.length === 0) { suggestionsPanel.style.display = 'none'; return; }
+        
+        suggestionsPanel.style.display = 'block';
+        list.forEach(item => {
+            const li = document.createElement('li');
+            li.innerHTML = `
+                <div>
+                    <div class="term-main">${item.label}</div>
+                    <div class="term-sub">${item.kind} · ${item.detail || ''}</div>
+                </div>
+                ${item.score ? `<div class="hot-score">🔥 ${item.score}</div>` : ''}
+            `;
+            li.addEventListener('click', () => {
+                searchInput.value = item.insertText;
+                suggestionsPanel.style.display = 'none';
+                // 点击即热度+1
+                triggerValidate(item.insertText);
+            });
+            suggestionsPanel.appendChild(li);
+        });
+    }
+
+    // 5. 粘贴与入库
+    document.getElementById('pasteBtn').addEventListener('click', async () => {
+        try {
+            const text = await navigator.clipboard.readText();
+            if (text) { searchInput.value = text; searchInput.dispatchEvent(new Event('input')); }
+        } catch(e) { showToast("无法读取剪贴板"); }
+    });
+
+    confirmBtn.addEventListener('click', () => triggerValidate(searchInput.value));
+
+    async function triggerValidate(term) {
+        if(!term) return;
+        confirmBtn.disabled = true;
+        try {
+            const res = await fetch('/api/validate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ term })
+            });
+            const json = await res.json();
+            showToast(json.success ? `✅ ${json.msg}` : `❌ ${json.msg}`);
+        } catch(e) { showToast("网络错误"); }
+        confirmBtn.disabled = false;
+    }
+
+    function showToast(msg) {
+        toast.innerText = msg; toast.style.opacity = 1;
+        setTimeout(() => toast.style.opacity = 0, 2000);
+    }
+    
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.search-container')) suggestionsPanel.style.display = 'none';
+    });
+</script>
+</body>
+</html>
