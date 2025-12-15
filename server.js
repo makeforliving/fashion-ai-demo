@@ -1,21 +1,19 @@
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
-const path = require("path"); // 🌟 新增：用于处理文件路径
+const path = require("path");
 require("dotenv").config();
 const Redis = require("ioredis");
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// 1. 中间件配置
+// 1. 中间件
 app.use(cors());
 app.use(express.json());
+app.use(express.static("public")); // 确保前端网页能显示
 
-// 🌟 关键修改：告诉服务器前端网页在 'public' 文件夹里
-app.use(express.static("public")); 
-
-// 2. Redis 连接配置
+// 2. Redis 连接
 let redis;
 if (process.env.REDIS_URL) {
     redis = new Redis(process.env.REDIS_URL);
@@ -25,7 +23,7 @@ if (process.env.REDIS_URL) {
     console.warn("⚠️ No REDIS_URL found, running without cache.");
 }
 
-// 3. API Key 轮询管理
+// 3. API Key 管理
 const apiKeys = process.env.GEMINI_API_KEYS
     ? process.env.GEMINI_API_KEYS.split(",")
     : [];
@@ -41,7 +39,7 @@ function getNextKey() {
     return key.trim();
 }
 
-// 4. 核心 AI 调用函数（自动降级逻辑：3.0 -> 2.5）
+// 4. AI 调用函数
 async function callGemini(fullText, triggerWord, userContext) {
     const apiKey = getNextKey();
     if (!apiKey) return [];
@@ -92,8 +90,7 @@ async function callGemini(fullText, triggerWord, userContext) {
     try {
         return await sendRequest('gemini-3-pro-preview');
     } catch (err1) {
-        const status = err1.response ? err1.response.status : 'Unknown';
-        console.warn(`⚠️ Gemini 3 failed (Status: ${status}). Switching to Gemini 2.5...`);
+        console.warn(`⚠️ Gemini 3 failed. Switching to Gemini 2.5...`);
         try {
             return await sendRequest('gemini-2.5-pro');
         } catch (err2) {
@@ -103,8 +100,12 @@ async function callGemini(fullText, triggerWord, userContext) {
     }
 }
 
-// 5. 路由：自动补全
-app.post("/api/complete", async (req, res) => {
+// ==========================================
+// 🌟 核心修改点：路由名称与前端保持一致
+// ==========================================
+
+// 5. 路由：智能补全 (对应前端 /api/suggest)
+app.post("/api/suggest", async (req, res) => {  // <--- 修改了这里
     const { text, cursor, context } = req.body;
     const textBeforeCursor = text.slice(0, cursor);
     const words = textBeforeCursor.trim().split(/[\s,，.。]+/);
@@ -138,8 +139,8 @@ app.post("/api/complete", async (req, res) => {
     }
 });
 
-// 6. 路由：新词入库
-app.post("/api/feedback", async (req, res) => {
+// 6. 路由：新词入库 (对应前端 /api/validate)
+app.post("/api/validate", async (req, res) => { // <--- 修改了这里
     const { word, category } = req.body;
     if (!word || !redis) return res.status(400).json({ error: "Invalid request" });
 
@@ -154,7 +155,7 @@ app.post("/api/feedback", async (req, res) => {
     }
 });
 
-// 7. 首页路由：确保返回 HTML 文件而不是文字
+// 7. 首页
 app.get("/", (req, res) => {
     res.sendFile(path.join(__dirname, "public", "index.html"));
 });
